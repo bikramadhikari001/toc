@@ -1,0 +1,30 @@
+# Ignore the downloads folder and its contents
+downloads/
+
+# Ignore all text files
+*.txt
+
+# Ignore all SQL files
+*.sql
+
+# Ignore all CSV files
+*.csv
+
+# Ignore Python compiled files
+__pycache__/
+*.py[cod]
+
+# Ignore virtual environment
+venv/
+.venv/
+
+# Ignore OS generated files
+.DS_Store
+Thumbs.db
+
+# Ignore IDE specific files
+.vscode/
+.idea/
+
+# Ignore log files
+*.log
