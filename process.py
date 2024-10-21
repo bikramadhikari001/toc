@@ -1,28 +1,31 @@
 import os
-import json
+import logging
 from toc_metadata_processor import process_and_write_toc_metadata
 from toc_mrf_metadata_processor import process_and_write_toc_mrf_metadata
-from toc_mrf_size_processor import process_and_write_toc_mrf_size
+from toc_mrf_size_processor import process_and_write_toc_mrf_size_data
+import config
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def main():
-    downloads_dir = os.path.join(os.getcwd(), "downloads")
+    downloads_dir = os.path.join(os.getcwd(), config.DOWNLOAD_DIR)
     json_files = [f for f in os.listdir(downloads_dir) if f.endswith('.json')]
     
     if not json_files:
-        print("No JSON files found in the downloads directory.")
+        logger.warning("No JSON files found in the downloads directory.")
         return
 
-    json_file = os.path.join(downloads_dir, json_files[0])
-    print(f"Processing file: {json_file}")
+    for json_file in json_files:
+        full_path = os.path.join(downloads_dir, json_file)
+        logger.info(f"Processing file: {full_path}")
 
-    with open(json_file, 'r') as f:
-        json_data = json.load(f)
+        process_and_write_toc_metadata(full_path, config.TOC_METADATA_CSV)
+        process_and_write_toc_mrf_metadata(full_path, config.TOC_MRF_METADATA_CSV)
+        process_and_write_toc_mrf_size_data(full_path, config.TOC_MRF_SIZE_DATA_CSV)
     
-    process_and_write_toc_metadata(json_data, json_file, 'toc_metadata.csv')
-    process_and_write_toc_mrf_metadata(json_data, 'toc_mrf_metadata.csv')
-    process_and_write_toc_mrf_size(json_data, 'toc_mrf_size_data.csv')
-    
-    print("CSV file creation process completed.")
+    logger.info("CSV file creation process completed.")
 
 if __name__ == "__main__":
     main()

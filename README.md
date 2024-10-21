@@ -1,17 +1,20 @@
 # Transparency in Coverage Data Processor
 
-This project is designed to download and process Transparency in Coverage (ToC) data from healthcare providers. It automates the process of fetching JSON files, extracting relevant information, and generating standardized CSV outputs.
+This project is designed to download and process Transparency in Coverage (ToC) data from healthcare providers. It automates the process of fetching JSON files, extracting relevant information, and generating standardized CSV outputs. The project has been optimized to handle large JSON files efficiently.
 
 ## Features
 
 - Automated download of ToC JSON files from specified URLs
+- Memory-efficient processing of large JSON files using streaming parser (ijson)
 - Parallel processing of downloaded JSON files to extract metadata, MRF (Machine-Readable File) metadata, and MRF size information
+- Chunked writing of data to CSV files to manage memory usage
 - Generation of three CSV files:
   - toc_metadata.csv
   - toc_mrf_metadata.csv
   - toc_mrf_size_data.csv
 - Configurable settings via config.py
 - Comprehensive error handling and logging
+- Progress tracking for long-running processes
 - Unit tests for key functions
 
 ## Prerequisites
@@ -46,6 +49,9 @@ You can customize the behavior of the application by modifying the `config.py` f
 - Output CSV file names
 - WebDriver wait times
 - Logging configuration
+- Chunk size for CSV writing
+- Maximum number of worker processes and threads
+- Timeout for file size retrieval requests
 
 ## Usage
 
@@ -57,8 +63,10 @@ python main.py
 
 This will:
 1. Download JSON files from the specified URL
-2. Process the downloaded files in parallel
+2. Process the downloaded files in parallel using memory-efficient methods
 3. Generate three CSV files with the extracted data
+
+The script now uses progress bars to show the status of file downloads and processing.
 
 ## Running Tests
 
@@ -87,6 +95,14 @@ The script generates three CSV files in the project root directory:
 ## Logging
 
 The application logs its activities to a file specified in `config.py`. By default, this is set to `toc_processor.log`. You can adjust the log level and file name in the configuration file.
+
+## Performance Considerations
+
+This version of the project has been optimized to handle large JSON files efficiently:
+- It uses a streaming JSON parser (ijson) to process large files without loading them entirely into memory.
+- Data is written to CSV files in chunks to manage memory usage.
+- Parallel processing is used to speed up file processing.
+- Concurrent requests are used for file size retrieval to improve performance.
 
 ## Contributing
 

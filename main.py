@@ -2,17 +2,19 @@ import os
 import json
 import time
 import logging
-from typing import List, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import ijson
+from typing import List, Dict, Any, Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from toc_metadata_processor import process_toc_metadata, write_toc_metadata_csv
-from toc_mrf_metadata_processor import process_toc_mrf_metadata, write_toc_mrf_metadata_csv
-from toc_mrf_size_processor import process_toc_mrf_size_data, write_toc_mrf_size_csv
+from toc_metadata_processor import process_and_write_toc_metadata
+from toc_mrf_metadata_processor import process_and_write_toc_mrf_metadata
+from toc_mrf_size_processor import process_and_write_toc_mrf_size_data
 import config
+from tqdm import tqdm
 
 # Set up logging
 logging.basicConfig(filename=config.LOG_FILE, level=config.LOG_LEVEL,
@@ -59,7 +61,7 @@ def download_json_files(url: str, num_files: int = config.NUM_FILES_TO_PROCESS) 
             EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li.ant-list-item a"))
         )
         
-        for i, link in enumerate(links[:num_files], 1):
+        for i, link in enumerate(tqdm(links[:num_files], desc="Downloading files")):
             filename = link.text
             link.click()
             
@@ -81,32 +83,22 @@ def download_json_files(url: str, num_files: int = config.NUM_FILES_TO_PROCESS) 
     
     return downloaded_files
 
-def process_single_file(json_file: str) -> Dict[str, List[Any]]:
+def process_single_file(json_file: str) -> None:
     """
-    Process a single JSON file and return the extracted data.
+    Process a single JSON file and write the extracted data to CSV files.
 
     Args:
         json_file (str): Path to the JSON file to process.
-
-    Returns:
-        Dict[str, List[Any]]: Dictionary containing the extracted data.
     """
     logging.info(f"Processing file: {json_file}")
     try:
-        with open(json_file, 'r') as f:
-            json_data = json.load(f)
-        
-        return {
-            'toc_metadata': process_toc_metadata(json_data, json_file),
-            'toc_mrf_metadata': process_toc_mrf_metadata(json_data),
-            'toc_mrf_size_data': process_toc_mrf_size_data(json_data)
-        }
-    except json.JSONDecodeError:
+        process_and_write_toc_metadata(json_file, config.TOC_METADATA_CSV)
+        process_and_write_toc_mrf_metadata(json_file, config.TOC_MRF_METADATA_CSV)
+        process_and_write_toc_mrf_size_data(json_file, config.TOC_MRF_SIZE_DATA_CSV)
+    except ijson.JSONError:
         logging.error(f"Invalid JSON in file: {json_file}")
     except Exception as e:
         logging.error(f"Error processing file {json_file}: {str(e)}")
-    
-    return {'toc_metadata': [], 'toc_mrf_metadata': [], 'toc_mrf_size_data': []}
 
 def process_json_files(json_files: List[str]) -> None:
     """
@@ -115,25 +107,8 @@ def process_json_files(json_files: List[str]) -> None:
     Args:
         json_files (List[str]): List of JSON file paths to process.
     """
-    all_toc_metadata = []
-    all_toc_mrf_metadata = []
-    all_toc_mrf_size_data = []
-
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        future_to_file = {executor.submit(process_single_file, file): file for file in json_files}
-        for future in as_completed(future_to_file):
-            file = future_to_file[future]
-            try:
-                data = future.result()
-                all_toc_metadata.extend(data['toc_metadata'])
-                all_toc_mrf_metadata.extend(data['toc_mrf_metadata'])
-                all_toc_mrf_size_data.extend(data['toc_mrf_size_data'])
-            except Exception as exc:
-                logging.error(f'{file} generated an exception: {exc}')
-
-    write_toc_metadata_csv(all_toc_metadata, config.TOC_METADATA_CSV)
-    write_toc_mrf_metadata_csv(all_toc_mrf_metadata, config.TOC_MRF_METADATA_CSV)
-    write_toc_mrf_size_csv(all_toc_mrf_size_data, config.TOC_MRF_SIZE_DATA_CSV)
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        list(tqdm(executor.map(process_single_file, json_files), total=len(json_files), desc="Processing files"))
 
 def main():
     """

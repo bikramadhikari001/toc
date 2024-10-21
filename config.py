@@ -18,3 +18,16 @@ DOWNLOAD_WAIT_TIME = 10
 # Logging configuration
 LOG_FILE = "toc_processor.log"
 LOG_LEVEL = "INFO"
+
+# New configuration parameters
+# Chunk size for writing to CSV files
+CSV_CHUNK_SIZE = 1000
+
+# Maximum number of worker processes for multiprocessing
+MAX_WORKERS = 4
+
+# Maximum number of threads for concurrent file size retrieval
+MAX_THREADS_FILE_SIZE = 10
+
+# Timeout for file size retrieval requests (in seconds)
+FILE_SIZE_REQUEST_TIMEOUT = 10
