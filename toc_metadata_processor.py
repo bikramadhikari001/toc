@@ -4,8 +4,10 @@ from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 import logging
 from contextlib import contextmanager
+import mmap
+import numpy as np
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 def extract_filename_from_url(url):
@@ -23,35 +25,47 @@ class TocMetadataProcessor:
         self.fieldnames = ['carrier', 'dh_re_id', 're_name', 'toc_source_url', 'batch', 'toc_file_name', 'toc_file_url', 'toc_or_mrf_file', 'mrf_file_plan_name', 'reporting_structure_index', 'remarks']
         self.reporting_structure_index = 0
         self.batch = []
-        self.batch_size = 1000
+        self.batch_size = 100000
         self.total_rows_written = 0
+        self.mmap_file = None
+        self.mmap_size = 1024 * 1024 * 1024  # 1GB initial size
 
     def __enter__(self):
+        self._create_mmap_file()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.finalize()
 
-    @contextmanager
-    def _open_csv(self):
-        try:
-            file = open(self.output_file, 'a', newline='')
-            writer = csv.DictWriter(file, fieldnames=self.fieldnames)
-            if os.path.getsize(self.output_file) == 0:
-                writer.writeheader()
-            yield writer
-        finally:
-            file.close()
+    def _create_mmap_file(self):
+        with open(self.output_file, 'wb') as f:
+            f.write(b'\0' * self.mmap_size)
+        self.mmap_file = mmap.mmap(os.open(self.output_file, os.O_RDWR), self.mmap_size)
+        self._write_header()
+
+    def _write_header(self):
+        header = ','.join(self.fieldnames) + '\n'
+        self.mmap_file.write(header.encode())
 
     def _write_batch(self):
-        with self._open_csv() as writer:
-            writer.writerows(self.batch)
+        batch_data = '\n'.join(','.join(str(row.get(field, '')) for field in self.fieldnames) for row in self.batch) + '\n'
+        encoded_data = batch_data.encode()
+        if self.mmap_file.tell() + len(encoded_data) > self.mmap_size:
+            self._resize_mmap_file()
+        self.mmap_file.write(encoded_data)
         self.total_rows_written += len(self.batch)
         self.batch.clear()
-        logger.info(f"Wrote batch. Total rows written: {self.total_rows_written}")
 
-    def process(self, item):
-        try:
+    def _resize_mmap_file(self):
+        self.mmap_size *= 2
+        self.mmap_file.close()
+        with open(self.output_file, 'ab') as f:
+            f.write(b'\0' * self.mmap_size)
+        self.mmap_file = mmap.mmap(os.open(self.output_file, os.O_RDWR), self.mmap_size)
+        self.mmap_file.seek(0, 2)  # Move to the end of the file
+
+    def process_batch(self, items):
+        for item in items:
             self.reporting_structure_index += 1
             re_name = item.get('reporting_entity_name', '')
             
@@ -77,13 +91,16 @@ class TocMetadataProcessor:
                 if len(self.batch) >= self.batch_size:
                     self._write_batch()
 
-        except Exception as e:
-            logger.error(f"Error processing item: {str(e)}")
+        if self.batch:
+            self._write_batch()
 
     def finalize(self):
         if self.batch:
             self._write_batch()
+        if self.mmap_file:
+            self.mmap_file.flush()
+            self.mmap_file.close()
         logger.info(f"Completed processing toc_metadata: {self.reporting_structure_index} structures processed, {self.total_rows_written} total rows written")
 
-def process_and_write_toc_metadata(output_file, carrier, streaming=False):
+def process_and_write_toc_metadata(output_file, carrier):
     return TocMetadataProcessor(output_file, carrier)
