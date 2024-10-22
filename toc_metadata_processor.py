@@ -2,7 +2,6 @@ import os
 import csv
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
-import ijson
 import logging
 
 logging.basicConfig(level=logging.DEBUG)
@@ -14,66 +13,47 @@ def extract_filename_from_url(url):
     if 'fn' in query_params:
         return query_params['fn'][0]
     else:
-        return "Unknown"
+        return os.path.basename(parsed_url.path) or "Unknown"
 
-def process_toc_metadata(json_parser, source_file):
-    metadata = []
-    reporting_structure_index = 0
-    current_structure = {}
-    
-    logger.debug(f"Starting to process JSON from {source_file}")
-    
-    for prefix, event, value in json_parser:
-        logger.debug(f"Parsing: prefix={prefix}, event={event}, value={value}")
+class TocMetadataProcessor:
+    def __init__(self, output_file, carrier):
+        self.output_file = output_file
+        self.carrier = carrier
+        self.fieldnames = ['carrier', 'dh_re_id', 're_name', 'toc_source_url', 'batch', 'toc_file_name', 'toc_file_url', 'toc_or_mrf_file', 'mrf_file_plan_name', 'reporting_structure_index', 'remarks']
+        self.csv_file = open(self.output_file, 'w', newline='')
+        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.fieldnames)
+        self.csv_writer.writeheader()
+        self.reporting_structure_index = 0
+        self.current_structure = {}
+
+    def process(self, item):
+        self.reporting_structure_index += 1
+        self.current_structure['reporting_entity_name'] = item.get('reporting_entity_name', '')
         
-        if prefix == 'reporting_entity_name':
-            current_structure['reporting_entity_name'] = value
-        elif prefix == 'reporting_structure.item':
-            if event == 'start_map':
-                reporting_structure_index += 1
-                current_structure = {'reporting_structure_index': reporting_structure_index, 'reporting_entity_name': current_structure.get('reporting_entity_name', '')}
-            elif event == 'end_map':
-                logger.debug(f"Completed reporting structure: {current_structure}")
-        elif prefix.endswith('.in_network_files.item'):
-            if event == 'start_map':
-                current_file = {}
-            elif event == 'end_map':
-                file_url = current_file.get('location', '')
-                file_name = extract_filename_from_url(file_url)
-                
-                metadata.append({
-                    'carrier': 'uhc',
-                    'dh_re_id': '',
-                    're_name': current_structure.get('reporting_entity_name', ''),
-                    'toc_source_url': source_file,
-                    'batch': '2024-10',
-                    'toc_file_name': file_name,
-                    'toc_file_url': file_url,
-                    'toc_or_mrf_file': 'TOC' if 'table_of_contents' in file_name.lower() else 'MRF',
-                    'mrf_file_plan_name': '',
-                    'reporting_structure_index': current_structure.get('reporting_structure_index', ''),
-                    'remarks': ''
-                })
-                logger.debug(f"Added metadata entry: {metadata[-1]}")
-        elif prefix.endswith('.in_network_files.item.location'):
-            current_file['location'] = value
-    
-    logger.info(f"Processed toc_metadata: {len(metadata)} records")
-    return metadata
+        for file_info in item.get('in_network_files', []):
+            file_url = file_info.get('location', '')
+            file_name = extract_filename_from_url(file_url)
+            
+            metadata_entry = {
+                'carrier': self.carrier,
+                'dh_re_id': '',
+                're_name': self.current_structure['reporting_entity_name'],
+                'toc_source_url': 'anthem_index.json',
+                'batch': '2024-10',
+                'toc_file_name': file_name,
+                'toc_file_url': file_url,
+                'toc_or_mrf_file': 'TOC' if 'table_of_contents' in file_name.lower() else 'MRF',
+                'mrf_file_plan_name': '',
+                'reporting_structure_index': self.reporting_structure_index,
+                'remarks': ''
+            }
+            self.csv_writer.writerow(metadata_entry)
+            self.csv_file.flush()  # Ensure the data is written immediately
+            logger.debug(f"Added metadata entry: {metadata_entry}")
 
-def write_toc_metadata_csv(data, filename):
-    fieldnames = ['carrier', 'dh_re_id', 're_name', 'toc_source_url', 'batch', 'toc_file_name', 'toc_file_url', 'toc_or_mrf_file', 'mrf_file_plan_name', 'reporting_structure_index', 'remarks']
-    with open(filename, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in data:
-            writer.writerow(row)
-    logger.info(f"Created {filename} with {len(data)} rows")
+    def finalize(self):
+        self.csv_file.close()
+        logger.info(f"Completed processing toc_metadata: {self.reporting_structure_index} structures processed")
 
-def process_and_write_toc_metadata(json_file, output_file):
-    logger.info(f"Processing file: {json_file}")
-    with open(json_file, 'rb') as file:
-        parser = ijson.parse(file)
-        metadata = process_toc_metadata(parser, json_file)
-    write_toc_metadata_csv(metadata, output_file)
-    logger.info(f"Completed processing {json_file}")
+def process_and_write_toc_metadata(output_file, carrier, streaming=False):
+    return TocMetadataProcessor(output_file, carrier)

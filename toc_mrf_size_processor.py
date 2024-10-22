@@ -1,10 +1,13 @@
 import csv
 import requests
-import ijson
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
-from typing import Iterator, Dict
+from typing import Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def get_file_size(url):
     try:
@@ -24,50 +27,46 @@ def extract_filename_from_url(url):
     else:
         return "Unknown"
 
-def process_toc_mrf_size_data(json_file: str) -> Iterator[Dict]:
-    with open(json_file, 'rb') as file:
-        parser = ijson.parse(file)
-        
-        for prefix, event, value in parser:
-            if prefix.endswith('.in_network_files.item') and event == 'end':
-                file_url = value.get('location', '')
+class TocMrfSizeProcessor:
+    def __init__(self, output_file: str, carrier: str):
+        self.output_file = output_file
+        self.carrier = carrier
+        self.fieldnames = ['in_network_file_name', 'in_network_file_size', 'remarks', 'carrier', 'batch']
+        self.csv_file = open(self.output_file, 'w', newline='')
+        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=self.fieldnames)
+        self.csv_writer.writeheader()
+        self.processed_rows = 0
+        self.executor = ThreadPoolExecutor(max_workers=10)
+        self.futures = []
+
+    def process(self, item: Dict):
+        if 'in_network_files' in item:
+            for file_info in item['in_network_files']:
+                file_url = file_info.get('location', '')
                 file_name = extract_filename_from_url(file_url)
-                yield {
-                    'in_network_file_name': file_name,
-                    'in_network_file_url': file_url,
-                    'carrier': 'uhc',
-                    'batch': '2024-10'
-                }
+                future = self.executor.submit(self._process_file, file_name, file_url)
+                self.futures.append(future)
 
-def get_file_sizes(data_iterator: Iterator[Dict]) -> Iterator[Dict]:
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_url = {executor.submit(get_file_size, item['in_network_file_url']): item for item in data_iterator}
-        for future in as_completed(future_to_url):
-            item = future_to_url[future]
-            file_size, remarks = future.result()
-            item['in_network_file_size'] = str(file_size) if file_size is not None else ''
-            item['remarks'] = remarks
-            yield item
+    def _process_file(self, file_name: str, file_url: str):
+        file_size, remarks = get_file_size(file_url)
+        row = {
+            'in_network_file_name': file_name,
+            'in_network_file_size': str(file_size) if file_size is not None else '',
+            'remarks': remarks,
+            'carrier': self.carrier,
+            'batch': '2024-10'
+        }
+        self.csv_writer.writerow(row)
+        self.csv_file.flush()  # Ensure the data is written immediately
+        self.processed_rows += 1
+        logger.debug(f"Added MRF size entry: {row}")
 
-def write_toc_mrf_size_csv(data_iterator: Iterator[Dict], filename: str, chunk_size: int = 100):
-    fieldnames = ['in_network_file_name', 'in_network_file_size', 'remarks', 'carrier', 'batch']
-    
-    with open(filename, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        
-        chunk = []
-        for row in data_iterator:
-            chunk.append(row)
-            if len(chunk) >= chunk_size:
-                writer.writerows(chunk)
-                chunk = []
-        
-        if chunk:
-            writer.writerows(chunk)
+    def finalize(self):
+        for future in as_completed(self.futures):
+            pass  # Wait for all futures to complete
+        self.executor.shutdown()
+        self.csv_file.close()
+        logger.info(f"Processed and wrote {self.processed_rows} rows of toc_mrf_size_data to {self.output_file}")
 
-def process_and_write_toc_mrf_size_data(json_file: str, output_file: str):
-    mrf_size_data_iterator = process_toc_mrf_size_data(json_file)
-    mrf_size_data_with_sizes = get_file_sizes(mrf_size_data_iterator)
-    write_toc_mrf_size_csv(mrf_size_data_with_sizes, output_file)
-    print(f"Processed and wrote toc_mrf_size_data to {output_file}")
+def process_and_write_toc_mrf_size_data(output_file: str, carrier: str, streaming: bool = False):
+    return TocMrfSizeProcessor(output_file, carrier)
