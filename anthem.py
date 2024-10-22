@@ -3,12 +3,16 @@ import logging
 import requests
 import gzip
 import shutil
-import ijson
+import json
 import argparse
+import gc
+import traceback
+import psutil
 from toc_metadata_processor import process_and_write_toc_metadata
 from toc_mrf_metadata_processor import process_and_write_toc_mrf_metadata
 from toc_mrf_size_processor import process_and_write_toc_mrf_size_data
 import config
+import tracemalloc
 
 # Set up logging
 logging.basicConfig(filename=config.LOG_FILE, level=config.LOG_LEVEL,
@@ -19,6 +23,7 @@ DOWNLOAD_DIR = "downloads"
 ANTHEM_FILE_NAME = "anthem_index.json.gz"
 UNZIPPED_FILE_NAME = "anthem_index.json"
 CARRIER_NAME = "anthem"
+BATCH_SIZE = 50  # Further reduced batch size for better memory management
 
 def download_anthem_file():
     """
@@ -28,12 +33,11 @@ def download_anthem_file():
     file_path = os.path.join(DOWNLOAD_DIR, ANTHEM_FILE_NAME)
     
     try:
-        response = requests.get(ANTHEM_URL, stream=True)
-        response.raise_for_status()
-        
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        with requests.get(ANTHEM_URL, stream=True) as response:
+            response.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
         
         logging.info(f"Successfully downloaded {ANTHEM_FILE_NAME}")
         return file_path
@@ -52,78 +56,85 @@ def unzip_file(file_path):
     logging.info(f"Successfully unzipped {ANTHEM_FILE_NAME}")
     return unzipped_path
 
+def read_json_file(file_path):
+    """
+    Generator function to read JSON objects from the file.
+    """
+    with open(file_path, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if line == '[' or line == ']':
+                continue
+            if line.endswith(','):
+                line = line[:-1]
+            
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding JSON: {str(e)}")
+
+def get_memory_usage():
+    """
+    Get current memory usage of the process.
+    """
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024  # in MB
+
 def process_anthem_file(file_path):
     """
-    Process the Anthem file using streaming processors.
+    Process the Anthem file using streaming processors and batch processing.
     """
     try:
-        toc_metadata_processor = process_and_write_toc_metadata(config.TOC_METADATA_CSV, CARRIER_NAME, streaming=True)
-        toc_mrf_metadata_processor = process_and_write_toc_mrf_metadata(config.TOC_MRF_METADATA_CSV, CARRIER_NAME, streaming=True)
-        toc_mrf_size_processor = process_and_write_toc_mrf_size_data(config.TOC_MRF_SIZE_DATA_CSV, CARRIER_NAME, streaming=True)
+        with process_and_write_toc_metadata(config.TOC_METADATA_CSV, CARRIER_NAME, streaming=True) as toc_metadata_processor, \
+             process_and_write_toc_mrf_metadata(config.TOC_MRF_METADATA_CSV, CARRIER_NAME, streaming=True) as toc_mrf_metadata_processor, \
+             process_and_write_toc_mrf_size_data(config.TOC_MRF_SIZE_DATA_CSV, CARRIER_NAME, streaming=True) as toc_mrf_size_processor:
 
-        with open(file_path, 'rb') as file:
-            parser = ijson.parse(file)
-            
-            current_object = {}
+            batch = []
             object_count = 0
-            in_reporting_structure = False
-            current_in_network_file = {}
-            current_reporting_plan = {}
+            error_count = 0
 
-            for prefix, event, value in parser:
-                if prefix == 'reporting_entity_name':
-                    current_object['reporting_entity_name'] = value
-                elif prefix == 'reporting_entity_type':
-                    current_object['reporting_entity_type'] = value
-                elif prefix == 'reporting_structure' and event == 'start_array':
-                    in_reporting_structure = True
-                    current_object['in_network_files'] = []
-                    current_object['reporting_plans'] = []
-                elif prefix == 'reporting_structure.item' and event == 'end_map':
-                    if in_reporting_structure:
-                        object_count += 1
-                        
-                        # Process the current object with all processors
-                        toc_metadata_processor.process(current_object)
-                        logging.info(f"Record added to {config.TOC_METADATA_CSV}")
-                        
-                        toc_mrf_metadata_processor.process(current_object)
-                        logging.info(f"Record added to {config.TOC_MRF_METADATA_CSV}")
-                        
-                        toc_mrf_size_processor.process(current_object)
-                        logging.info(f"Record added to {config.TOC_MRF_SIZE_DATA_CSV}")
-                        
-                        # Reset for next object
-                        current_object = {'in_network_files': [], 'reporting_plans': []}
-                elif prefix.endswith('.in_network_files.item') and event == 'start_map':
-                    current_in_network_file = {}
-                elif prefix.endswith('.in_network_files.item') and event == 'end_map':
-                    current_object['in_network_files'].append(current_in_network_file)
-                elif prefix.endswith('.in_network_files.item.location'):
-                    current_in_network_file['location'] = value
-                elif prefix.endswith('.in_network_files.item.description'):
-                    current_in_network_file['description'] = value
-                elif prefix.endswith('.reporting_plans.item') and event == 'start_map':
-                    current_reporting_plan = {}
-                elif prefix.endswith('.reporting_plans.item') and event == 'end_map':
-                    current_object['reporting_plans'].append(current_reporting_plan)
-                elif prefix.endswith('.reporting_plans.item.plan_name'):
-                    current_reporting_plan['plan_name'] = value
-                elif prefix.endswith('.reporting_plans.item.plan_id_type'):
-                    current_reporting_plan['plan_id_type'] = value
-                elif prefix.endswith('.reporting_plans.item.plan_id'):
-                    current_reporting_plan['plan_id'] = value
-                elif prefix.endswith('.reporting_plans.item.plan_market_type'):
-                    current_reporting_plan['plan_market_type'] = value
-            
-        # Finalize all processors
-        toc_metadata_processor.finalize()
-        toc_mrf_metadata_processor.finalize()
-        toc_mrf_size_processor.finalize()
-        
-        logging.info(f"Successfully processed {file_path}. Total objects processed: {object_count}")
+            for obj in read_json_file(file_path):
+                batch.append(obj)
+                object_count += 1
+
+                if len(batch) >= BATCH_SIZE:
+                    for item in batch:
+                        try:
+                            toc_metadata_processor.process(item)
+                            toc_mrf_metadata_processor.process(item)
+                            toc_mrf_size_processor.process(item)
+                        except Exception as e:
+                            logging.error(f"Error processing item: {str(e)}")
+                            error_count += 1
+                    
+                    logging.info(f"Processed batch of {len(batch)} records")
+                    batch.clear()
+                    gc.collect()  # Periodic garbage collection
+                    
+                    memory_usage = get_memory_usage()
+                    logging.info(f"Current memory usage: {memory_usage:.2f} MB")
+
+                if object_count % 1000 == 0:
+                    logging.info(f"Processed {object_count} objects, Errors: {error_count}")
+                    print(f"Processed {object_count} objects, Errors: {error_count}", end='\r')  # Progress indicator
+
+            # Process any remaining objects in the last batch
+            if batch:
+                for item in batch:
+                    try:
+                        toc_metadata_processor.process(item)
+                        toc_mrf_metadata_processor.process(item)
+                        toc_mrf_size_processor.process(item)
+                    except Exception as e:
+                        logging.error(f"Error processing item: {str(e)}")
+                        error_count += 1
+                logging.info(f"Processed final batch of {len(batch)} records")
+
+        logging.info(f"Successfully processed {file_path}. Total objects processed: {object_count}, Errors: {error_count}")
+        print(f"\nSuccessfully processed {object_count} objects, Errors: {error_count}")
     except Exception as e:
         logging.error(f"Error processing file {file_path}: {str(e)}")
+        logging.error(traceback.format_exc())
 
 def main():
     """
@@ -134,6 +145,8 @@ def main():
     args = parser.parse_args()
 
     try:
+        tracemalloc.start()
+        
         if args.process_only:
             unzipped_file = os.path.join(DOWNLOAD_DIR, UNZIPPED_FILE_NAME)
             if os.path.exists(unzipped_file):
@@ -146,9 +159,16 @@ def main():
             if downloaded_file:
                 unzipped_file = unzip_file(downloaded_file)
                 process_anthem_file(unzipped_file)
+        
         logging.info("Anthem file processing completed.")
+        
+        current, peak = tracemalloc.get_traced_memory()
+        logging.info(f"Final memory usage: Current: {current / 10**6:.2f}MB; Peak: {peak / 10**6:.2f}MB")
+        print(f"Final memory usage: Current: {current / 10**6:.2f}MB; Peak: {peak / 10**6:.2f}MB")
+        tracemalloc.stop()
     except Exception as e:
         logging.error(f"An unexpected error occurred: {str(e)}")
+        logging.error(traceback.format_exc())
 
 if __name__ == "__main__":
     main()

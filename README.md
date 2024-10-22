@@ -1,6 +1,6 @@
 # Transparency in Coverage Data Processor
 
-This project is designed to download and process Transparency in Coverage (ToC) data from healthcare providers. It automates the process of fetching JSON files, extracting relevant information, and generating standardized CSV outputs. The project has been optimized to handle large JSON files efficiently.
+This project is designed to download and process Transparency in Coverage (ToC) data from healthcare providers. It automates the process of fetching JSON files, extracting relevant information, and generating standardized CSV outputs. The project has been optimized to handle large JSON files efficiently, including the 20GB Anthem index file.
 
 ## Features
 
@@ -16,6 +16,8 @@ This project is designed to download and process Transparency in Coverage (ToC) 
 - Comprehensive error handling and logging
 - Progress tracking for long-running processes
 - Unit tests for key functions
+- Support for both streaming and non-streaming processing approaches
+- Option to process existing files without re-downloading
 
 ## Prerequisites
 
@@ -63,10 +65,33 @@ python main.py
 
 This will:
 1. Download JSON files from the specified URL
-2. Process the downloaded files in parallel using memory-efficient methods
+2. Process the downloaded files using memory-efficient streaming methods
 3. Generate three CSV files with the extracted data
 
-The script now uses progress bars to show the status of file downloads and processing.
+For processing the large Anthem index file, use:
+
+```
+python anthem.py
+```
+
+This script is specifically optimized to handle the 20GB Anthem index JSON file using a streaming approach.
+
+To process an existing Anthem file without downloading:
+
+```
+python anthem.py --process-only
+```
+
+This option assumes that the file has already been downloaded and unzipped in the `downloads` directory.
+
+## Logging
+
+The application logs its activities to a file specified in `config.py`. By default, this is set to `toc_processor.log`. You can adjust the log level and file name in the configuration file.
+
+The logging has been improved to show progress during the processing of the Anthem file. It now logs:
+- The start of processing for each object
+- A summary every 1000 objects processed
+- The total number of objects processed at the end
 
 ## Running Tests
 
@@ -79,6 +104,7 @@ python -m unittest test_main.py
 ## File Descriptions
 
 - `main.py`: The main script that orchestrates the download and processing of files
+- `anthem.py`: Specialized script for processing the large Anthem index file
 - `toc_metadata_processor.py`: Processes and generates toc_metadata.csv
 - `toc_mrf_metadata_processor.py`: Processes and generates toc_mrf_metadata.csv
 - `toc_mrf_size_processor.py`: Processes and generates toc_mrf_size_data.csv
@@ -92,10 +118,6 @@ The script generates three CSV files in the project root directory:
 2. `toc_mrf_metadata.csv`: Contains metadata specific to the Machine-Readable Files
 3. `toc_mrf_size_data.csv`: Contains size information for the in-network files
 
-## Logging
-
-The application logs its activities to a file specified in `config.py`. By default, this is set to `toc_processor.log`. You can adjust the log level and file name in the configuration file.
-
 ## Performance Considerations
 
 This version of the project has been optimized to handle large JSON files efficiently:
@@ -103,6 +125,7 @@ This version of the project has been optimized to handle large JSON files effici
 - Data is written to CSV files in chunks to manage memory usage.
 - Parallel processing is used to speed up file processing.
 - Concurrent requests are used for file size retrieval to improve performance.
+- The Anthem index file processor (anthem.py) is specifically designed to handle the 20GB JSON file using a streaming approach.
 
 ## Contributing
 
